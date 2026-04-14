@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./health_analyzer.db"
 
+    # File uploads — local path (used when use_azure_storage=False)
+    upload_dir: str = "uploads/lab_tests"
+
+    # Azure Blob Storage (for production file uploads)
+    use_azure_storage: bool = False
+    azure_storage_connection_string: str = ""
+    azure_storage_container: str = "health-uploads"
+
     # Anthropic
     anthropic_api_key: str = ""
 

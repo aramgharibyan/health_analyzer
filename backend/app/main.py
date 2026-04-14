@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,30 +15,42 @@ from app.api.integrations import router as integrations_router
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    create_tables()
+    os.makedirs(settings.upload_dir, exist_ok=True)
+    yield
+    # Shutdown (nothing to clean up)
+
+
 app = FastAPI(
     title="Health Analyzer API",
     description="Unified health data aggregation and AI analysis platform",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=lifespan,
+)
+
+# CORS — restrict to localhost only outside production
+_cors_origins = (
+    [settings.frontend_url]
+    if settings.app_env == "production"
+    else [settings.frontend_url, "http://localhost:3000", "http://localhost:5173"]
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:3000", "http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Create DB tables on startup
-@app.on_event("startup")
-async def startup_event():
-    create_tables()
-    os.makedirs("uploads/lab_tests", exist_ok=True)
-
-# Mount static files for uploads
-if os.path.exists("uploads"):
+# Mount local uploads directory for file serving (dev / non-Azure)
+if not settings.use_azure_storage and os.path.exists(settings.upload_dir.split("/")[0]):
     app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Register routers

@@ -27,13 +27,16 @@ Supported HealthKit types → our models:
 """
 
 import io
+import os
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta, date
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, Union
 import json
 
+import aiofiles
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Request, Query
 from sqlalchemy.orm import Session
 
@@ -194,10 +197,17 @@ class AppleHealthParser:
         self.metrics: list[dict] = []
         self.workouts: list[dict] = []
 
-    def parse_stream(self, xml_bytes: bytes):
-        """Parse XML bytes using iterparse."""
-        ctx = ET.iterparse(io.BytesIO(xml_bytes), events=("start", "end"))
+    def parse_file(self, source: Union[str, object]):
+        """Parse XML from a file path or file-like object using iterparse (streaming, no OOM)."""
+        ctx = ET.iterparse(source, events=("start", "end"))
+        self._run_parse(ctx)
 
+    def parse_stream(self, xml_bytes: bytes):
+        """Parse XML bytes using iterparse (kept for small in-memory payloads)."""
+        ctx = ET.iterparse(io.BytesIO(xml_bytes), events=("start", "end"))
+        self._run_parse(ctx)
+
+    def _run_parse(self, ctx):
         current_workout: Optional[dict] = None
 
         for event, elem in ctx:
@@ -496,6 +506,7 @@ async def import_apple_health(
     """
     Upload the Apple Health ZIP export (or the raw export.xml).
     In the iOS Health app: tap your profile picture → Export All Health Data.
+    The file is streamed to /tmp in 1 MB chunks to avoid OOM on 500 MB exports.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -507,62 +518,81 @@ async def import_apple_health(
             detail="Please upload the export.zip from the Health app, or the export.xml file directly.",
         )
 
-    content = await file.read()
-
-    if fname.endswith(".zip"):
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                # Find export.xml (may be in a sub-folder)
-                xml_name = next(
-                    (n for n in zf.namelist() if n.lower().endswith("export.xml")),
-                    None,
-                )
-                if not xml_name:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Could not find export.xml inside the ZIP. Make sure you are uploading the Apple Health export ZIP.",
-                    )
-                xml_bytes = zf.read(xml_name)
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=400, detail="Invalid ZIP file.")
-    else:
-        xml_bytes = content
-
-    integration = _get_or_create_integration(current_user, db)
-    log = SyncLog(integration_id=integration.id)
-    db.add(log)
-    db.commit()
+    # Stream the upload to /tmp (never load the full file into memory)
+    suffix = ".zip" if fname.endswith(".zip") else ".xml"
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir="/tmp")
+    os.close(tmp_fd)
 
     try:
-        parser = AppleHealthParser()
-        parser.parse_stream(xml_bytes)
-        synced = _persist_parsed(parser, current_user.id, db)
+        async with aiofiles.open(tmp_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB at a time
+                if not chunk:
+                    break
+                await out.write(chunk)
 
-        integration.is_connected = True
-        integration.last_synced_at = datetime.now(timezone.utc)
-        log.status = "success"
-        log.records_synced = synced
-        log.completed_at = datetime.now(timezone.utc)
+        integration = _get_or_create_integration(current_user, db)
+        log = SyncLog(integration_id=integration.id)
+        db.add(log)
         db.commit()
 
-        return {
-            "status": "success",
-            "records_imported": synced,
-            "breakdown": {
-                "metrics": len(parser.metrics),
-                "sleep_sessions": len(parser.sleep_sessions),
-                "workouts": len(parser.workouts),
-                "nutrition_days": len(parser.nutrition_days),
-                "body_metric_days": len(parser.body_days),
-                "hydration_days": len(parser.hydration_days),
-            },
-        }
-    except Exception as e:
-        log.status = "error"
-        log.error_message = str(e)
-        log.completed_at = datetime.now(timezone.utc)
-        db.commit()
-        raise HTTPException(status_code=500, detail=f"Parse error: {e}")
+        try:
+            parser = AppleHealthParser()
+
+            if fname.endswith(".zip"):
+                try:
+                    with zipfile.ZipFile(tmp_path) as zf:
+                        xml_name = next(
+                            (n for n in zf.namelist() if n.lower().endswith("export.xml")),
+                            None,
+                        )
+                        if not xml_name:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Could not find export.xml inside the ZIP. Make sure you are uploading the Apple Health export ZIP.",
+                            )
+                        # zf.open() returns a file-like object — iterparse reads it
+                        # without extracting the full XML into memory
+                        with zf.open(xml_name) as xml_file:
+                            parser.parse_file(xml_file)
+                except zipfile.BadZipFile:
+                    raise HTTPException(status_code=400, detail="Invalid ZIP file.")
+            else:
+                parser.parse_file(tmp_path)
+
+            synced = _persist_parsed(parser, current_user.id, db)
+
+            integration.is_connected = True
+            integration.last_synced_at = datetime.now(timezone.utc)
+            log.status = "success"
+            log.records_synced = synced
+            log.completed_at = datetime.now(timezone.utc)
+            db.commit()
+
+            return {
+                "status": "success",
+                "records_imported": synced,
+                "breakdown": {
+                    "metrics": len(parser.metrics),
+                    "sleep_sessions": len(parser.sleep_sessions),
+                    "workouts": len(parser.workouts),
+                    "nutrition_days": len(parser.nutrition_days),
+                    "body_metric_days": len(parser.body_days),
+                    "hydration_days": len(parser.hydration_days),
+                },
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.status = "error"
+            log.error_message = str(e)
+            log.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            raise HTTPException(status_code=500, detail=f"Parse error: {e}")
+    finally:
+        # Always clean up the temp file regardless of success or failure
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @router.post("/webhook")

@@ -1,0 +1,91 @@
+version: '3.9'
+
+# Production smoke-test compose — mirrors the Azure Container Apps + PostgreSQL setup.
+# Uses a local PostgreSQL container and Azurite (Azure Blob Storage emulator) so you
+# can verify the full stack locally before pushing to Azure.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up --build
+#
+# Requires a .env.prod file (never commit it):
+#   DATABASE_URL=postgresql://healthapp:healthpass@postgres:5432/healthanalyzer
+#   SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_hex(32))">
+#   APP_ENV=production
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   USE_AZURE_STORAGE=true
+#   AZURE_STORAGE_CONNECTION_STRING=<azurite connection string below>
+#   AZURE_STORAGE_CONTAINER=health-uploads
+#   FRONTEND_URL=http://localhost:3000
+#   WHOOP_CLIENT_ID=... WHOOP_CLIENT_SECRET=...   (optional)
+#   WITHINGS_CLIENT_ID=... WITHINGS_CLIENT_SECRET=...  (optional)
+#
+# Azurite connection string for local testing:
+#   DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tiqvXFpxRdBQsZM3DF4iHhI==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: health_analyzer_db
+    environment:
+      POSTGRES_USER: healthapp
+      POSTGRES_PASSWORD: healthpass
+      POSTGRES_DB: healthanalyzer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthapp -d healthanalyzer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: health_analyzer_azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000
+    volumes:
+      - azurite_data:/data
+    ports:
+      - "10000:10000"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: health_analyzer_backend
+    env_file: ./backend/.env.prod
+    # No source bind-mount — uses the baked image (real production behaviour)
+    volumes:
+      - /tmp:/tmp  # Apple Health ZIP temp files
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Run Alembic migrations before starting the server
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: health_analyzer_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  azurite_data:
