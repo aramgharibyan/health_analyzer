@@ -13,7 +13,7 @@ from app.config import get_settings
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 settings = get_settings()
 
-PLATFORMS = ["whoop", "withings", "fitbod", "yazio", "renpho", "braun", "larq"]
+PLATFORMS = ["whoop", "withings", "fitbod", "yazio", "renpho", "braun", "larq", "apple_health"]
 
 PLATFORM_META = {
     "whoop": {
@@ -64,6 +64,13 @@ PLATFORM_META = {
         "logo": "larq",
         "auth_type": "oauth2",
         "data_types": ["hydration"],
+    },
+    "apple_health": {
+        "name": "Apple Health",
+        "description": "All HealthKit data: steps, sleep, heart rate, workouts, nutrition, body metrics",
+        "logo": "apple_health",
+        "auth_type": "export",
+        "data_types": ["sleep", "activity", "heart_rate", "hrv", "nutrition", "body_metrics", "hydration", "workouts"],
     },
 }
 
@@ -122,7 +129,7 @@ async def sync_all(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Trigger sync for all connected integrations."""
+    """Trigger sync for all connected integrations (API-based only; Apple Health requires re-import)."""
     from app.api.integrations.whoop import sync_whoop
     from app.api.integrations.withings import sync_withings
     from app.api.integrations.fitbod import sync_fitbod
@@ -138,6 +145,7 @@ async def sync_all(
         "yazio": sync_yazio,
         "renpho": sync_renpho,
         "larq": sync_larq,
+        # apple_health is export-based; skipped from auto-sync
     }
 
     integrations = db.query(Integration).filter_by(

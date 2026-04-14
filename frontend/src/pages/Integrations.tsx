@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   CheckCircle, XCircle, RefreshCw, Link2, Link2Off, Upload,
-  ChevronDown, ChevronUp, Clock, ExternalLink
+  ChevronDown, ChevronUp, Clock, Copy, Check, Info, Webhook
 } from 'lucide-react'
 import { integrationsApi } from '../services/api'
 import type { Integration } from '../types'
@@ -18,18 +18,233 @@ const PLATFORM_ICONS: Record<string, string> = {
   renpho: '📊',
   braun: '🩺',
   larq: '💧',
+  apple_health: '🍎',
 }
 
 const AUTH_TYPE_LABELS: Record<string, string> = {
   oauth2: 'OAuth2 (Secure)',
   credentials: 'Email & Password',
   api_key: 'API Key',
+  export: 'File Export / Webhook',
 }
 
 interface SyncState {
   loading: boolean
   result: string | null
+  uploadPct?: number
 }
+
+// ── Apple Health panel ────────────────────────────────────────────────────────
+
+function AppleHealthPanel({
+  integration,
+  onImported,
+}: {
+  integration: Integration
+  onImported: () => void
+}) {
+  const [uploadPct, setUploadPct] = useState<number | null>(null)
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
+  const [webhookToken, setWebhookToken] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const handleFile = async (file: File) => {
+    setResult(null)
+    setUploadPct(0)
+    try {
+      const res = await integrationsApi.appleHealthImport(file, (pct) => setUploadPct(pct))
+      const d = res.data
+      setResult({
+        ok: true,
+        text: `Imported ${d.records_imported.toLocaleString()} records — `
+          + `${d.breakdown.sleep_sessions} sleep sessions, `
+          + `${d.breakdown.workouts} workouts, `
+          + `${d.breakdown.nutrition_days} nutrition days, `
+          + `${d.breakdown.metrics.toLocaleString()} metrics.`,
+      })
+      onImported()
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Import failed — make sure you uploaded the Apple Health ZIP or export.xml.'
+      setResult({ ok: false, text: msg })
+    } finally {
+      setUploadPct(null)
+    }
+  }
+
+  const fetchToken = async () => {
+    try {
+      const res = await integrationsApi.appleHealthWebhookToken()
+      setWebhookToken(res.data.token)
+    } catch {
+      setWebhookToken('error')
+    }
+  }
+
+  const copyToken = () => {
+    if (webhookToken) {
+      navigator.clipboard.writeText(
+        `${window.location.origin}/api/integrations/apple-health/webhook?token=${webhookToken}`
+      )
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  return (
+    <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-5">
+
+      {/* ── Method 1: Export ZIP ─────────────────────────────────── */}
+      <div>
+        <p className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-3">
+          Method 1 — Export from the Health app
+        </p>
+        <ol className="space-y-1.5 text-xs text-slate-400 mb-4 list-decimal list-inside">
+          <li>Open the <strong className="text-slate-300">Health</strong> app on your iPhone</li>
+          <li>Tap your <strong className="text-slate-300">profile picture</strong> (top-right)</li>
+          <li>Scroll down and tap <strong className="text-slate-300">Export All Health Data</strong></li>
+          <li>Tap <strong className="text-slate-300">Export</strong> in the confirmation dialog</li>
+          <li>Share the <code className="text-brand-400 bg-surface-800 px-1 rounded">export.zip</code> to your computer and upload it below</li>
+        </ol>
+
+        <div
+          className={clsx(
+            'border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors',
+            uploadPct !== null
+              ? 'border-brand-500/50 bg-brand-500/5 cursor-default'
+              : 'border-surface-700 hover:border-brand-500/40 hover:bg-surface-800/50'
+          )}
+          onClick={() => uploadPct === null && fileRef.current?.click()}
+        >
+          <input
+            type="file"
+            accept=".zip,.xml"
+            className="hidden"
+            ref={fileRef}
+            onChange={e => {
+              const file = e.target.files?.[0]
+              if (file) handleFile(file)
+              e.target.value = ''
+            }}
+          />
+
+          {uploadPct !== null ? (
+            <div className="space-y-3">
+              <div className="text-sm text-slate-300 font-medium">
+                {uploadPct < 100 ? `Uploading… ${uploadPct}%` : 'Parsing health data…'}
+              </div>
+              <div className="w-full bg-surface-700 rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-full bg-brand-500 rounded-full transition-all duration-300"
+                  style={{ width: `${uploadPct < 100 ? uploadPct : 100}%` }}
+                />
+              </div>
+              {uploadPct === 100 && (
+                <p className="text-xs text-slate-500">
+                  Processing export.xml — this can take a minute for large exports…
+                </p>
+              )}
+            </div>
+          ) : (
+            <>
+              <Upload className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+              <p className="text-sm text-slate-400">
+                Drop <code className="text-brand-400">export.zip</code> or{' '}
+                <code className="text-brand-400">export.xml</code> here, or click to browse
+              </p>
+              <p className="text-xs text-slate-600 mt-1">
+                Large exports (100–500 MB) are supported
+              </p>
+            </>
+          )}
+        </div>
+
+        {result && (
+          <div className={clsx(
+            'mt-3 px-3 py-2.5 rounded-lg text-xs leading-relaxed',
+            result.ok
+              ? 'bg-brand-500/10 border border-brand-500/20 text-brand-400'
+              : 'bg-red-500/10 border border-red-500/20 text-red-400'
+          )}>
+            {result.ok ? <CheckCircle className="inline w-3.5 h-3.5 mr-1.5 mb-0.5" /> : null}
+            {result.text}
+          </div>
+        )}
+      </div>
+
+      {/* ── Divider ──────────────────────────────────────────────── */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1 h-px bg-surface-700" />
+        <span className="text-xs text-slate-600">or</span>
+        <div className="flex-1 h-px bg-surface-700" />
+      </div>
+
+      {/* ── Method 2: Health Auto Export webhook ─────────────────── */}
+      <div>
+        <p className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-3">
+          Method 2 — Real-time sync via Health Auto Export
+        </p>
+        <div className="bg-surface-800 rounded-lg p-4 space-y-3">
+          <div className="flex gap-2">
+            <Info className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Install <strong className="text-slate-300">Health Auto Export</strong> (free on the App Store).
+              It reads HealthKit data on a schedule and POSTs it directly to this app —
+              no manual exports needed.
+            </p>
+          </div>
+          <ol className="space-y-1.5 text-xs text-slate-400 list-decimal list-inside">
+            <li>Download <strong className="text-slate-300">Health Auto Export — JSON+CSV</strong> from the App Store</li>
+            <li>Open the app → <strong className="text-slate-300">REST API</strong> tab</li>
+            <li>Toggle <strong className="text-slate-300">REST API</strong> on</li>
+            <li>Paste the webhook URL below into the <strong className="text-slate-300">URL</strong> field</li>
+            <li>Set your preferred sync interval (hourly recommended)</li>
+          </ol>
+
+          {!webhookToken ? (
+            <button
+              onClick={fetchToken}
+              className="btn-secondary text-xs flex items-center gap-2"
+            >
+              <Webhook className="w-3.5 h-3.5" />
+              Generate webhook URL
+            </button>
+          ) : webhookToken === 'error' ? (
+            <p className="text-xs text-red-400">Failed to generate token — try again</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500">Your webhook URL (contains your auth token — keep it private):</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-brand-400 break-all">
+                  {window.location.origin}/api/integrations/apple-health/webhook?token={webhookToken.slice(0, 24)}…
+                </code>
+                <button
+                  onClick={copyToken}
+                  className="btn-secondary flex items-center gap-1.5 text-xs flex-shrink-0"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-brand-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copied ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Meta row ─────────────────────────────────────────────── */}
+      {integration.last_synced_at && (
+        <div className="flex items-center gap-1.5 text-xs text-slate-500">
+          <Clock className="w-3 h-3" />
+          Last import: {format(new Date(integration.last_synced_at), 'MMM d, yyyy HH:mm')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function Integrations() {
   const [integrations, setIntegrations] = useState<Integration[]>([])
@@ -44,9 +259,7 @@ export default function Integrations() {
   useEffect(() => {
     loadIntegrations()
     const connected = searchParams.get('connected')
-    if (connected) {
-      setTimeout(loadIntegrations, 1000)
-    }
+    if (connected) setTimeout(loadIntegrations, 1000)
   }, [])
 
   const loadIntegrations = async () => {
@@ -61,6 +274,12 @@ export default function Integrations() {
   }
 
   const handleConnect = async (platform: string, authType: string) => {
+    // Export-based platforms: just open the expanded panel with instructions
+    if (authType === 'export') {
+      setExpanded(platform)
+      return
+    }
+
     try {
       setSyncStates(s => ({ ...s, [platform]: { loading: true, result: null } }))
 
@@ -72,13 +291,11 @@ export default function Integrations() {
         else if (platform === 'yazio') res = await integrationsApi.yazioConnect()
         else if (platform === 'larq') res = await integrationsApi.larqConnect()
 
-        if (res?.data?.auth_url) {
-          window.location.href = res.data.auth_url
-        }
+        if (res?.data?.auth_url) window.location.href = res.data.auth_url
       } else {
         setConnectForms(f => ({ ...f, [platform]: true }))
       }
-    } catch (e) {
+    } catch {
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: 'Connection failed' } }))
     } finally {
       setSyncStates(s => ({ ...s, [platform]: { ...s[platform], loading: false } }))
@@ -89,15 +306,12 @@ export default function Integrations() {
     const data = formData[platform] || {}
     try {
       setSyncStates(s => ({ ...s, [platform]: { loading: true, result: null } }))
-      if (platform === 'renpho') {
-        await integrationsApi.renphoConnect(data.email, data.password)
-      } else if (platform === 'braun') {
-        await integrationsApi.braunConnect(data.api_key)
-      }
+      if (platform === 'renpho') await integrationsApi.renphoConnect(data.email, data.password)
+      else if (platform === 'braun') await integrationsApi.braunConnect(data.api_key)
       setConnectForms(f => ({ ...f, [platform]: false }))
       await loadIntegrations()
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: 'Connected!' } }))
-    } catch (e) {
+    } catch {
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: 'Connection failed' } }))
     }
   }
@@ -111,6 +325,7 @@ export default function Integrations() {
       else if (platform === 'renpho') await integrationsApi.renphoDisconnect()
       else if (platform === 'braun') await integrationsApi.braunDisconnect()
       else if (platform === 'larq') await integrationsApi.larqDisconnect()
+      else if (platform === 'apple_health') await integrationsApi.appleHealthDisconnect()
       await loadIntegrations()
     } catch (e) {
       console.error(e)
@@ -127,11 +342,12 @@ export default function Integrations() {
       else if (platform === 'yazio') res = await integrationsApi.yazioSync()
       else if (platform === 'renpho') res = await integrationsApi.renphoSync()
       else if (platform === 'larq') res = await integrationsApi.larqSync()
+      // apple_health has no "sync" button — re-import instead
 
       const count = res?.data?.records_synced || 0
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: `Synced ${count} records` } }))
       await loadIntegrations()
-    } catch (e) {
+    } catch {
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: 'Sync failed' } }))
     }
   }
@@ -147,7 +363,7 @@ export default function Integrations() {
 
       const count = res?.data?.records_imported || 0
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: `Imported ${count} records` } }))
-    } catch (e) {
+    } catch {
       setSyncStates(s => ({ ...s, [platform]: { loading: false, result: 'Import failed' } }))
     }
   }
@@ -163,7 +379,10 @@ export default function Integrations() {
           <h1 className="text-xl font-bold text-white">Integrations</h1>
           <p className="text-slate-500 text-sm">{connectedCount} of {integrations.length} connected</p>
         </div>
-        <button onClick={() => integrationsApi.syncAll().then(loadIntegrations)} className="btn-secondary flex items-center gap-2 text-sm">
+        <button
+          onClick={() => integrationsApi.syncAll().then(loadIntegrations)}
+          className="btn-secondary flex items-center gap-2 text-sm"
+        >
           <RefreshCw className="w-4 h-4" />
           Sync All
         </button>
@@ -174,16 +393,20 @@ export default function Integrations() {
           const syncState = syncStates[integration.platform] || { loading: false, result: null }
           const isExpanded = expanded === integration.platform
           const showForm = connectForms[integration.platform]
+          const isAppleHealth = integration.platform === 'apple_health'
+          const isExportType = integration.auth_type === 'export'
 
           return (
             <div key={integration.platform} className="card">
               <div className="flex items-center gap-4">
+                {/* Icon */}
                 <div className="text-2xl w-10 flex-shrink-0 flex items-center justify-center">
-                  {PLATFORM_ICONS[integration.platform]}
+                  {PLATFORM_ICONS[integration.platform] ?? '🔗'}
                 </div>
 
+                {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-semibold text-white text-sm">{integration.name}</h3>
                     {integration.is_connected ? (
                       <span className="badge-green flex items-center gap-1">
@@ -194,6 +417,9 @@ export default function Integrations() {
                         <XCircle className="w-3 h-3" /> Not connected
                       </span>
                     )}
+                    {isExportType && (
+                      <span className="badge-blue">Export / Webhook</span>
+                    )}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">{integration.description}</p>
                   <div className="flex flex-wrap gap-1 mt-1.5">
@@ -203,20 +429,33 @@ export default function Integrations() {
                   </div>
                 </div>
 
+                {/* Actions */}
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {integration.is_connected ? (
                     <>
-                      <button
-                        onClick={() => handleSync(integration.platform)}
-                        disabled={syncState.loading}
-                        className="btn-secondary flex items-center gap-1.5 text-xs py-1.5"
-                      >
-                        <RefreshCw className={clsx('w-3.5 h-3.5', syncState.loading && 'animate-spin')} />
-                        Sync
-                      </button>
+                      {/* Apple Health: Re-import button instead of Sync */}
+                      {isAppleHealth ? (
+                        <button
+                          onClick={() => setExpanded(isExpanded ? null : integration.platform)}
+                          className="btn-secondary flex items-center gap-1.5 text-xs py-1.5"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          Re-import
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleSync(integration.platform)}
+                          disabled={syncState.loading}
+                          className="btn-secondary flex items-center gap-1.5 text-xs py-1.5"
+                        >
+                          <RefreshCw className={clsx('w-3.5 h-3.5', syncState.loading && 'animate-spin')} />
+                          Sync
+                        </button>
+                      )}
                       <button
                         onClick={() => handleDisconnect(integration.platform)}
                         className="btn-ghost flex items-center gap-1.5 text-xs py-1.5 text-red-400 hover:text-red-300"
+                        title="Disconnect"
                       >
                         <Link2Off className="w-3.5 h-3.5" />
                       </button>
@@ -228,20 +467,23 @@ export default function Integrations() {
                       className="btn-primary flex items-center gap-1.5 text-xs py-1.5"
                     >
                       <Link2 className="w-3.5 h-3.5" />
-                      Connect
+                      {isExportType ? 'Import' : 'Connect'}
                     </button>
                   )}
-                  <button
-                    onClick={() => setExpanded(isExpanded ? null : integration.platform)}
-                    className="btn-ghost py-1.5 px-2"
-                  >
-                    {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                  </button>
+                  {/* Expand toggle — skip for Apple Health (always shown in connect flow) */}
+                  {!isAppleHealth && (
+                    <button
+                      onClick={() => setExpanded(isExpanded ? null : integration.platform)}
+                      className="btn-ghost py-1.5 px-2"
+                    >
+                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Sync result */}
-              {syncState.result && (
+              {/* Non-Apple sync result banner */}
+              {syncState.result && !isAppleHealth && (
                 <div className={clsx(
                   'mt-3 px-3 py-2 rounded-lg text-xs',
                   syncState.result.includes('failed') ? 'bg-red-500/10 text-red-400' : 'bg-brand-500/10 text-brand-400'
@@ -250,13 +492,21 @@ export default function Integrations() {
                 </div>
               )}
 
-              {/* Expanded details */}
-              {isExpanded && (
+              {/* ── Apple Health dedicated panel ── */}
+              {isAppleHealth && isExpanded && (
+                <AppleHealthPanel
+                  integration={integration}
+                  onImported={loadIntegrations}
+                />
+              )}
+
+              {/* ── Standard expanded panel (non-Apple) ── */}
+              {!isAppleHealth && isExpanded && (
                 <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
                   <div className="grid grid-cols-2 gap-4 text-xs">
                     <div>
                       <span className="text-slate-500">Auth type: </span>
-                      <span className="text-slate-300">{AUTH_TYPE_LABELS[integration.auth_type]}</span>
+                      <span className="text-slate-300">{AUTH_TYPE_LABELS[integration.auth_type] ?? integration.auth_type}</span>
                     </div>
                     {integration.platform_username && (
                       <div>
@@ -275,7 +525,7 @@ export default function Integrations() {
                     )}
                   </div>
 
-                  {/* Credential connect form */}
+                  {/* Credential / API key form */}
                   {showForm && !integration.is_connected && (
                     <div className="bg-surface-800 rounded-lg p-4 space-y-3">
                       {integration.auth_type === 'credentials' && (
@@ -329,7 +579,7 @@ export default function Integrations() {
                     </div>
                   )}
 
-                  {/* Import section */}
+                  {/* CSV import section */}
                   {['fitbod', 'yazio', 'renpho', 'braun'].includes(integration.platform) && (
                     <div>
                       <p className="text-xs text-slate-500 mb-2">Or import data from CSV export:</p>

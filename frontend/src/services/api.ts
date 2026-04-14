@@ -124,6 +124,24 @@ export const integrationsApi = {
   larqSync: (days = 30) => api.post(`/integrations/larq/sync?days=${days}`),
   larqDisconnect: () => api.post('/integrations/larq/disconnect'),
   larqLog: (amount_ml: number) => api.post('/integrations/larq/log', { amount_ml }),
+
+  // Apple Health
+  appleHealthImport: (file: File, onUploadProgress?: (pct: number) => void) => {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post('/integrations/apple-health/import', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (evt) => {
+        if (onUploadProgress && evt.total) {
+          onUploadProgress(Math.round((evt.loaded * 100) / evt.total))
+        }
+      },
+      // exports can be large — give it 10 minutes
+      timeout: 600_000,
+    })
+  },
+  appleHealthDisconnect: () => api.post('/integrations/apple-health/disconnect'),
+  appleHealthWebhookToken: () => api.get('/integrations/apple-health/webhook-token'),
 }
 
 // Lab Tests
