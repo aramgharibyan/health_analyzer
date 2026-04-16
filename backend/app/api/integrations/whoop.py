@@ -64,12 +64,18 @@ async def _refresh_token_if_needed(integration: Integration, db: Session):
 
 
 @router.get("/connect")
-async def connect_whoop(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Start Whoop OAuth2 PKCE flow."""
+async def connect_whoop(
+    mobile: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Start Whoop OAuth2 PKCE flow. Pass ?mobile=true from the mobile app."""
     code_verifier = secrets.token_urlsafe(64)
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode()).digest()
     ).rstrip(b"=").decode()
+
+    redirect_uri = settings.whoop_mobile_redirect_uri if mobile else settings.whoop_redirect_uri
 
     # Store verifier in integration record for callback
     integration = _get_integration(current_user, db)
@@ -81,7 +87,7 @@ async def connect_whoop(current_user: User = Depends(get_current_user), db: Sess
 
     params = {
         "client_id": settings.whoop_client_id,
-        "redirect_uri": settings.whoop_redirect_uri,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": SCOPES,
         "state": str(current_user.id),

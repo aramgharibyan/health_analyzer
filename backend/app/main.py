@@ -38,7 +38,7 @@ app = FastAPI(
 _cors_origins = (
     [settings.frontend_url]
     if settings.app_env == "production"
-    else [settings.frontend_url, "http://localhost:3000", "http://localhost:5173"]
+    else [settings.frontend_url, "http://localhost:3000", "http://localhost:5173", "http://localhost:8081"]
 )
 
 app.add_middleware(

@@ -58,8 +58,9 @@ async def _refresh_token(integration: Integration, db: Session):
 
 @router.get("/connect")
 async def connect_larq(
+    mobile: bool = False,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     integration = _get_integration(current_user, db)
     if not integration:
@@ -67,9 +68,10 @@ async def connect_larq(
         db.add(integration)
         db.commit()
 
+    redirect_uri = settings.larq_mobile_redirect_uri if mobile else settings.larq_redirect_uri
     params = {
         "client_id": settings.larq_client_id,
-        "redirect_uri": settings.larq_redirect_uri,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "hydration.read",
         "state": str(current_user.id),

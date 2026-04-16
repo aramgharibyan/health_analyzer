@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Health Analyzer",
+    "slug": "health-analyzer",
+    "version": "1.0.0",
+    "scheme": "healthanalyzer",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.healthanalyzer.app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "Health Analyzer reads your health data from Apple Health to display insights, trends, and AI-powered recommendations.",
+        "NSHealthUpdateUsageDescription": "Health Analyzer may write workout data back to Apple Health.",
+        "NSCameraUsageDescription": "Camera access is needed to photograph lab test documents.",
+        "NSPhotoLibraryUsageDescription": "Photo library access is needed to upload lab test images."
+      }
+    },
+    "android": {
+      "package": "com.healthanalyzer.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0ea5e9"
+      }
+    },
+    "plugins": [
+      "react-native-health",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Health Analyzer to access your photos to upload lab test documents."
+        }
+      ]
+    ],
+    "extra": {
+      "apiUrl": "http://localhost:8000"
+    }
+  }
+}

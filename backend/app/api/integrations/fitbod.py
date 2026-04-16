@@ -33,8 +33,9 @@ def _get_integration(user: User, db: Session) -> Optional[Integration]:
 
 @router.get("/connect")
 async def connect_fitbod(
+    mobile: bool = False,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     integration = _get_integration(current_user, db)
     if not integration:
@@ -42,10 +43,11 @@ async def connect_fitbod(
         db.add(integration)
         db.commit()
 
+    redirect_uri = settings.fitbod_mobile_redirect_uri if mobile else settings.fitbod_redirect_uri
     params = {
         "response_type": "code",
         "client_id": settings.fitbod_client_id,
-        "redirect_uri": settings.fitbod_redirect_uri,
+        "redirect_uri": redirect_uri,
         "scope": "workouts:read",
         "state": str(current_user.id),
     }

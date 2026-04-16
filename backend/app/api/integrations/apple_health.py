@@ -755,6 +755,39 @@ def _process_health_auto_export(body: dict, user_id: int, db: Session) -> int:
     return synced
 
 
+@router.post("/sync-native")
+async def sync_native_apple_health(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Called by the iOS mobile app after reading native HealthKit data.
+    Accepts the same JSON shape as the webhook endpoint (Health Auto Export format).
+    Uses standard JWT Bearer auth — no separate webhook token needed.
+    """
+    integration = _get_or_create_integration(current_user, db)
+    log = SyncLog(integration_id=integration.id)
+    db.add(log)
+    db.commit()
+
+    try:
+        synced = _process_health_auto_export(payload, current_user.id, db)
+        integration.is_connected = True
+        integration.last_synced_at = datetime.now(timezone.utc)
+        log.status = "success"
+        log.records_synced = synced
+        log.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"status": "ok", "records_synced": synced}
+    except Exception as e:
+        log.status = "error"
+        log.error_message = str(e)
+        log.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/disconnect")
 async def disconnect_apple_health(
     current_user: User = Depends(get_current_user),

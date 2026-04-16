@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     larq_redirect_uri: str = "http://localhost:8000/api/integrations/larq/callback"
     larq_api_base: str = "https://api.mylarq.com/v1"
 
+    # Mobile deep-link redirect URIs (used when ?mobile=true on connect endpoints)
+    whoop_mobile_redirect_uri: str = "healthanalyzer://oauth/whoop/callback"
+    withings_mobile_redirect_uri: str = "healthanalyzer://oauth/withings/callback"
+    fitbod_mobile_redirect_uri: str = "healthanalyzer://oauth/fitbod/callback"
+    yazio_mobile_redirect_uri: str = "healthanalyzer://oauth/yazio/callback"
+    larq_mobile_redirect_uri: str = "healthanalyzer://oauth/larq/callback"
+
     # Frontend
     frontend_url: str = "http://localhost:3000"
 

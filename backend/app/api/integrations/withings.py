@@ -57,8 +57,9 @@ async def _refresh_token_if_needed(integration: Integration, db: Session):
 
 @router.get("/connect")
 async def connect_withings(
+    mobile: bool = False,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     integration = _get_integration(current_user, db)
     if not integration:
@@ -66,10 +67,11 @@ async def connect_withings(
         db.add(integration)
         db.commit()
 
+    redirect_uri = settings.withings_mobile_redirect_uri if mobile else settings.withings_redirect_uri
     params = {
         "response_type": "code",
         "client_id": settings.withings_client_id,
-        "redirect_uri": settings.withings_redirect_uri,
+        "redirect_uri": redirect_uri,
         "scope": "user.info,user.metrics,user.activity,user.sleepevents",
         "state": str(current_user.id),
     }
