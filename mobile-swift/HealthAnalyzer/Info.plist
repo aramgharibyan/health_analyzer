@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Health Analyzer</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.yourname.healthanalyzer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>healthanalyzer</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Health Analyzer reads your Apple Health data to display insights and trends on your dashboard.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Health Analyzer may write workout summaries to Apple Health.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Health Analyzer uses the camera to capture photos of your lab test results.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Health Analyzer accesses your photo library to upload photos of your lab test results.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>
