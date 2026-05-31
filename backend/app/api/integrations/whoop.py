@@ -47,7 +47,12 @@ def _save_tokens(integration: Integration, token_data: dict, db: Session):
 async def _refresh_token_if_needed(integration: Integration, db: Session):
     if not integration.token_expires_at:
         return
-    if datetime.now(timezone.utc) < integration.token_expires_at - timedelta(minutes=5):
+
+    token_expires_at = integration.token_expires_at
+    if token_expires_at.tzinfo is None:
+        token_expires_at = token_expires_at.replace(tzinfo=timezone.utc)
+
+    if datetime.now(timezone.utc) < token_expires_at - timedelta(minutes=5):
         return
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -77,12 +82,18 @@ async def connect_whoop(
 
     redirect_uri = settings.whoop_mobile_redirect_uri if mobile else settings.whoop_redirect_uri
 
-    # Store verifier in integration record for callback
+    # Use a secure random state and preserve the user ID for callback lookup.
+    state = f"{current_user.id}:{secrets.token_urlsafe(32)}"
+
+    # Store verifier + state in integration record for callback validation.
     integration = _get_integration(current_user, db)
     if not integration:
         integration = Integration(user_id=current_user.id, platform=PLATFORM)
         db.add(integration)
-    integration.credentials = {"code_verifier": code_verifier}
+    integration.credentials = {
+        "code_verifier": code_verifier,
+        "oauth_state": state,
+    }
     db.commit()
 
     params = {
@@ -90,7 +101,7 @@ async def connect_whoop(
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": SCOPES,
-        "state": str(current_user.id),
+        "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
@@ -106,9 +117,21 @@ async def whoop_callback(
     db: Session = Depends(get_db)
 ):
     """Handle Whoop OAuth callback."""
-    user_id = int(state)
+    if ":" not in state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    user_id_str, _ = state.split(":", 1)
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
     integration = db.query(Integration).filter_by(user_id=user_id, platform=PLATFORM).first()
     if not integration or not integration.credentials:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    expected_state = integration.credentials.get("oauth_state")
+    if expected_state != state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     code_verifier = integration.credentials.get("code_verifier")
@@ -140,6 +163,14 @@ async def whoop_callback(
         integration.platform_user_id = str(profile.get("user_id", ""))
         integration.platform_username = profile.get("email", "")
         db.commit()
+
+    user = db.query(User).filter_by(id=user_id).first()
+    if user:
+        try:
+            await sync_whoop(user, db)
+        except Exception:
+            # Sync is best-effort on initial connect; connection still succeeds.
+            pass
 
     return RedirectResponse(f"{settings.frontend_url}/integrations?connected=whoop")
 
@@ -262,7 +293,6 @@ async def sync_whoop(
                     source=PLATFORM,
                     measured_at=datetime.now(timezone.utc),
                     weight_kg=data.get("weight_kilogram"),
-                    height_cm=data.get("height_meter", 0) * 100 if data.get("height_meter") else None,
                     raw_data=data,
                 )
                 db.add(body)
