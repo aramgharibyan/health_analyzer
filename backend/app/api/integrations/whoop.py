@@ -58,8 +58,22 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+class WhoopAPIError(Exception):
+    """Raised when a Whoop endpoint returns a non-200 so failures aren't silent."""
+
+    def __init__(self, status: int, body: str):
+        self.status = status
+        self.body = body
+        super().__init__(f"HTTP {status}: {body[:300]}")
+
+
 async def _fetch_all(client, url, headers, params, max_pages: int = 30) -> list:
-    """Page through a Whoop collection endpoint following next_token."""
+    """Page through a Whoop collection endpoint following next_token.
+
+    Raises WhoopAPIError on a non-200 response so the caller can record and
+    report it instead of silently returning an empty list (which previously
+    made sleep/workout failures look like "no data").
+    """
     records: list = []
     next_token = None
     for _ in range(max_pages):
@@ -68,7 +82,7 @@ async def _fetch_all(client, url, headers, params, max_pages: int = 30) -> list:
             page_params["nextToken"] = next_token
         resp = await client.get(url, headers=headers, params=page_params)
         if resp.status_code != 200:
-            break
+            raise WhoopAPIError(resp.status_code, resp.text)
         body = resp.json()
         records.extend(body.get("records", []))
         next_token = body.get("next_token")
@@ -256,16 +270,30 @@ async def sync_whoop(
     db.commit()
 
     synced = 0
+    errors: dict[str, dict] = {}
+    counts: dict[str, int] = {}
     headers = {"Authorization": f"Bearer {integration.access_token}"}
     start = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     base = settings.whoop_api_base
     params = {"start": start, "limit": 25}
 
     async with httpx.AsyncClient(timeout=30) as client:
+        async def fetch(resource: str, path: str) -> list:
+            """Fetch a collection, recording failures instead of swallowing them."""
+            try:
+                records = await _fetch_all(client, f"{base}/{path}", headers, params)
+                counts[resource] = len(records)
+                return records
+            except WhoopAPIError as exc:
+                errors[resource] = {"status": exc.status, "body": exc.body[:500]}
+            except Exception as exc:  # network, parsing, etc.
+                errors[resource] = {"error": str(exc)}
+            return []
+
         # 1. Recovery first — keyed by sleep_id so we can enrich each sleep record
         #    with HRV, recovery score, resting HR and SpO2 (Whoop's core metrics).
         recovery_by_sleep: dict[str, dict] = {}
-        for record in await _fetch_all(client, f"{base}/recovery", headers, params):
+        for record in await fetch("recovery", "recovery"):
             if record.get("score_state") != "SCORED":
                 continue
             score = record.get("score") or {}
@@ -274,7 +302,7 @@ async def sync_whoop(
                 recovery_by_sleep[str(sleep_id)] = score
 
         # 2. Sleep — fix stage nesting (score.stage_summary) and merge recovery in.
-        for record in await _fetch_all(client, f"{base}/activity/sleep", headers, params):
+        for record in await fetch("sleep", "activity/sleep"):
             if record.get("nap"):
                 continue  # skip naps so the dashboard trend reflects main sleep
             score = record.get("score") or {}
@@ -314,7 +342,7 @@ async def sync_whoop(
             synced += 1
 
         # 3. Workouts / strain — with duration, distance and sport name.
-        for record in await _fetch_all(client, f"{base}/activity/workout", headers, params):
+        for record in await fetch("workout", "activity/workout"):
             score = record.get("score") or {}
             start_t = _parse_dt(record["start"])
             end_t = _parse_dt(record["end"])
@@ -347,7 +375,7 @@ async def sync_whoop(
 
         # 4. Physiological cycles — daily strain, calories, avg/max HR.
         #    Stored as generic HealthMetric rows so they don't pollute workouts.
-        for record in await _fetch_all(client, f"{base}/cycle", headers, params):
+        for record in await fetch("cycle", "cycle"):
             score = record.get("score") or {}
             if record.get("score_state") != "SCORED":
                 continue
@@ -380,6 +408,7 @@ async def sync_whoop(
         resp = await client.get(f"{base}/user/measurement/body", headers=headers)
         if resp.status_code == 200 and resp.json():
             data = resp.json()
+            counts["body"] = 1
             if data.get("height_meter") and not current_user.height_cm:
                 current_user.height_cm = data["height_meter"] * 100
             body = (
@@ -400,11 +429,25 @@ async def sync_whoop(
                     raw_data=data,
                 ))
             synced += 1
+        elif resp.status_code != 200:
+            errors["body"] = {"status": resp.status_code, "body": resp.text[:500]}
 
     integration.last_synced_at = datetime.now(timezone.utc)
-    log.status = "success"
     log.records_synced = synced
     log.completed_at = datetime.now(timezone.utc)
+    log.details = {"counts": counts, "errors": errors, "granted_scope": integration.token_scope}
+    if errors:
+        # Some endpoints failed (e.g. missing OAuth scopes) — surface it.
+        log.status = "partial" if synced else "failed"
+        log.error_message = "; ".join(f"{k}: {v}" for k, v in errors.items())[:1000]
+    else:
+        log.status = "success"
     db.commit()
 
-    return {"status": "success", "records_synced": synced}
+    return {
+        "status": log.status,
+        "records_synced": synced,
+        "counts": counts,
+        "errors": errors,
+        "granted_scope": integration.token_scope,
+    }
