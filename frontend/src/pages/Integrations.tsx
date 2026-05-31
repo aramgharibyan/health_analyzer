@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   CheckCircle, XCircle, RefreshCw, Link2, Link2Off, Upload,
-  ChevronDown, ChevronUp, Clock, Copy, Check, Info, Webhook
+  ChevronDown, ChevronUp, Clock, Copy, Check, Info, Webhook, AlertTriangle
 } from 'lucide-react'
 import { integrationsApi } from '../services/api'
 import type { Integration } from '../types'
@@ -28,10 +28,41 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
   export: 'File Export / Webhook',
 }
 
+interface SyncEndpointError {
+  status?: number
+  body?: string
+  error?: string
+}
+
+interface SyncDetails {
+  counts?: Record<string, number>
+  errors?: Record<string, SyncEndpointError>
+  granted_scope?: string | null
+}
+
 interface SyncState {
   loading: boolean
   result: string | null
+  ok?: boolean
+  details?: SyncDetails
   uploadPct?: number
+}
+
+// Whoop OAuth scope required to read each resource — used to explain failures.
+const WHOOP_RESOURCE_SCOPE: Record<string, string> = {
+  recovery: 'read:recovery',
+  sleep: 'read:sleep',
+  workout: 'read:workout',
+  cycle: 'read:cycles',
+  body: 'read:body_measurement',
+}
+
+const RESOURCE_LABELS: Record<string, string> = {
+  recovery: 'Recovery (HRV)',
+  sleep: 'Sleep',
+  workout: 'Workouts',
+  cycle: 'Daily strain',
+  body: 'Body / weight',
 }
 
 // ── Apple Health panel ────────────────────────────────────────────────────────
@@ -244,6 +275,95 @@ function AppleHealthPanel({
   )
 }
 
+// ── Sync result + diagnostics ─────────────────────────────────────────────────
+
+function SyncResult({ platform, state }: { platform: string; state: SyncState }) {
+  const details = state.details
+  const errors = details?.errors ?? {}
+  const counts = details?.counts ?? {}
+  const errorKeys = Object.keys(errors)
+  const hasErrors = errorKeys.length > 0
+  const grantedScope = details?.granted_scope ?? null
+
+  // Whoop: flag endpoints that failed because the OAuth grant lacks the scope.
+  const missingScopeResources =
+    platform === 'whoop' && grantedScope !== null
+      ? errorKeys.filter(r => {
+          const needed = WHOOP_RESOURCE_SCOPE[r]
+          return needed && !grantedScope.split(/\s+/).includes(needed)
+        })
+      : []
+
+  const tone = state.ok ? 'ok' : hasErrors ? 'warn' : 'error'
+
+  return (
+    <div className="mt-3 space-y-2">
+      {/* Headline banner */}
+      <div className={clsx(
+        'px-3 py-2 rounded-lg text-xs flex items-center gap-2',
+        tone === 'ok' && 'bg-brand-500/10 text-brand-400',
+        tone === 'warn' && 'bg-amber-500/10 text-amber-400',
+        tone === 'error' && 'bg-red-500/10 text-red-400',
+      )}>
+        {tone === 'ok'
+          ? <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          : <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />}
+        {state.result}
+      </div>
+
+      {/* Per-endpoint record counts */}
+      {Object.keys(counts).length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(counts).map(([k, n]) => (
+            <span key={k} className="px-2 py-0.5 rounded text-xs bg-surface-800 text-slate-400">
+              {RESOURCE_LABELS[k] ?? k}: <span className="text-slate-200">{n}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Per-endpoint errors + remediation */}
+      {hasErrors && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+          <p className="text-xs font-semibold text-amber-400">Some data couldn&apos;t be fetched:</p>
+          <ul className="space-y-1">
+            {errorKeys.map(r => (
+              <li key={r} className="text-xs text-slate-400">
+                <span className="text-slate-300">{RESOURCE_LABELS[r] ?? r}</span>
+                {errors[r].status ? ` — HTTP ${errors[r].status}` : ''}
+                {errors[r].error ? ` — ${errors[r].error}` : ''}
+              </li>
+            ))}
+          </ul>
+
+          {missingScopeResources.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-amber-500/20 space-y-2 text-xs text-slate-400">
+              <p className="text-amber-400 font-medium">
+                Your Whoop authorization is missing permission(s):{' '}
+                <code className="text-amber-300">{missingScopeResources.map(r => WHOOP_RESOURCE_SCOPE[r]).join(', ')}</code>
+              </p>
+              <ol className="list-decimal list-inside space-y-0.5">
+                <li>
+                  Open <a className="text-brand-400 underline" href="https://developer.whoop.com" target="_blank" rel="noreferrer">developer.whoop.com</a>
+                  {' '}→ your app → enable the missing scopes
+                </li>
+                <li>Back here, click <strong className="text-slate-300">Disconnect</strong>, then <strong className="text-slate-300">Connect</strong> again to re-authorize</li>
+                <li>Click <strong className="text-slate-300">Sync</strong></li>
+              </ol>
+            </div>
+          )}
+
+          {grantedScope && (
+            <p className="text-xs text-slate-500 pt-1">
+              Granted scopes: <code className="text-slate-400 break-all">{grantedScope}</code>
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Integrations() {
@@ -344,11 +464,28 @@ export default function Integrations() {
       else if (platform === 'larq') res = await integrationsApi.larqSync()
       // apple_health has no "sync" button — re-import instead
 
-      const count = res?.data?.records_synced || 0
-      setSyncStates(s => ({ ...s, [platform]: { loading: false, result: `Synced ${count} records` } }))
+      const data = res?.data ?? {}
+      const count = data.records_synced || 0
+      const errors: Record<string, SyncEndpointError> = data.errors ?? {}
+      const hasErrors = Object.keys(errors).length > 0
+      setSyncStates(s => ({
+        ...s,
+        [platform]: {
+          loading: false,
+          ok: !hasErrors,
+          result: hasErrors
+            ? `Synced ${count} records — some data couldn't be fetched`
+            : `Synced ${count} records`,
+          details: {
+            counts: data.counts,
+            errors,
+            granted_scope: data.granted_scope,
+          },
+        },
+      }))
       await loadIntegrations()
     } catch {
-      setSyncStates(s => ({ ...s, [platform]: { loading: false, result: 'Sync failed' } }))
+      setSyncStates(s => ({ ...s, [platform]: { loading: false, ok: false, result: 'Sync failed' } }))
     }
   }
 
@@ -482,14 +619,9 @@ export default function Integrations() {
                 </div>
               </div>
 
-              {/* Non-Apple sync result banner */}
+              {/* Non-Apple sync result banner + diagnostics */}
               {syncState.result && !isAppleHealth && (
-                <div className={clsx(
-                  'mt-3 px-3 py-2 rounded-lg text-xs',
-                  syncState.result.includes('failed') ? 'bg-red-500/10 text-red-400' : 'bg-brand-500/10 text-brand-400'
-                )}>
-                  {syncState.result}
-                </div>
+                <SyncResult platform={integration.platform} state={syncState} />
               )}
 
               {/* ── Apple Health dedicated panel ── */}
